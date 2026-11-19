@@ -55,9 +55,10 @@ It asks a few questions; pressing Enter keeps the default:
 ## After install
 
 ```bash
-# If a user wasn't signed in to Claude yet (Linux): sign in once, then restart
-sudo -iu <user> claude              # log in, then /exit
-sudo systemctl restart claude-device@<user> claude-live@<user>
+# Link the machine to your Claude account: sign in once per user, with the
+# SAME account as your Claude phone app. Open the link it prints, sign in,
+# paste the code back. The device and sessions then start by themselves.
+sudo -iu <user> claude auth login
 
 # If the server had an older Claude autostart, stop it once
 # (the script already disabled it for the next boot)
@@ -94,7 +95,7 @@ claude-live list
 - **RAM:** each live session uses about 300-450 MB. Lower "max sessions" on
   small VMs.
 - **Login expiry:** if a user's Claude login expires, their sessions stop
-  reconnecting until they sign in again (`sudo -iu <user> claude`).
+  reconnecting until they sign in again (`sudo -iu <user> claude auth login`).
 - **Only pick real users.** Don't set it up for service accounts (webmin,
   monitoring tools, etc.).
 - **macOS:** automatic login means anyone with physical access gets your

@@ -25,8 +25,8 @@
 #     claude-live remove <name>     # stop a session for good
 #     claude-live attach <name>     # see its terminal (Ctrl-b d to leave)
 #  Linux, if a user isn't signed in yet:
-#     sudo -iu <user> claude        # sign in, then /exit
-#     sudo systemctl restart claude-device@<user> claude-live@<user>
+#     sudo -iu <user> claude auth login   # same account as your phone app
+#     (device + sessions then start by themselves within a minute)
 #  Linux, if the server had an older Claude autostart, stop it once
 #  (it is already disabled for the next boot):
 #     sudo systemctl stop claude-remote
@@ -110,6 +110,11 @@ cd "$HOME"
   done ) &
 # Retry if it stops early (a registration left over from before a reboot can
 # block it for a few minutes: "This folder is already served ...").
+# Not signed in yet? Wait (checking every 30s) until the user signs in, so no
+# restart is needed after `claude auth login`.
+until claude auth status 2>/dev/null | grep -q '"loggedIn": true'; do
+  echo "Waiting for sign-in: run  claude auth login  as $(id -un)"; sleep 30
+done
 for try in $(seq 1 20); do
   claude remote-control --permission-mode "${PERMISSION_MODE:-auto}" \
          --no-create-session-in-dir \
@@ -202,6 +207,7 @@ case "${1:-list}" in
   boot)  # wait for the network, then let the device claim its folder first
          # (a session in a parent folder would otherwise block the device)
          for i in $(seq 1 60); do curl -s -o /dev/null --max-time 5 https://api.anthropic.com && break; sleep 2; done
+         until claude auth status 2>/dev/null | grep -q '"loggedIn": true'; do sleep 30; done
          for i in $(seq 1 60); do
            tmux -L claude-device capture-pane -p -t device 2>/dev/null | grep -q 'Ready' && break
            sleep 2; done
@@ -309,7 +315,7 @@ WorkingDirectory=~
 ExecStart=/usr/local/bin/claude-live boot
 ExecStop=/usr/local/bin/claude-live stop-all
 RemainAfterExit=yes
-TimeoutStartSec=300
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=multi-user.target
@@ -356,8 +362,8 @@ if [ -n "$NEED_LOGIN" ]; then
   echo
   echo "Sign in once for:$NEED_LOGIN"
   for U in $NEED_LOGIN; do
-    echo "   sudo -iu $U claude        # pick theme, sign in, trust folder, then /exit"
-    echo "   sudo systemctl restart claude-device@$U claude-live@$U"
+    echo "   sudo -iu $U claude auth login     # open the link, sign in, paste the code"
+    echo "   (the device and sessions then start by themselves within a minute)"
   done
 fi
 if systemctl is-active --quiet claude-remote 2>/dev/null; then
