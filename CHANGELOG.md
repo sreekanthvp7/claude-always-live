@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.2 — 2026-11-19
+- Choice 2 now asks for just the person's name for each Linux user
+  (e.g. `ravi`), instead of `user:name`.
+
 ## v1.2.1 — 2026-11-19
 - Linux, run without `sudo`: the second download now times out and retries
   instead of hanging silently, and says to use `| sudo bash` if GitHub is slow.

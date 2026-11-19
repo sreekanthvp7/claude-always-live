@@ -55,7 +55,7 @@
 #     FileVault on); anyone with physical access then gets your desktop.
 # =============================================================================
 set -euo pipefail
-VERSION="1.2.1"
+VERSION="1.2.2"
 SELF_URL="https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/main/install.sh"
 OS=$(uname)
 
@@ -379,11 +379,14 @@ echo "  1 = one Claude account per Linux user (each person has their own Linux u
 echo "  2 = also other people's Claude accounts on the SAME Linux user (same home"
 echo "      and files; each person signs in with their own account)"
 ask SHARE_MODE      "Choose 1 or 2"                                              "1"
-EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-}
+EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-}   # non-interactive form: "user:name user:name"
 if [ "$SHARE_MODE" = "2" ] && [ -z "$EXTRA_ACCOUNTS" ]; then
-  echo "Name each extra person as user:name (space separated)."
-  echo "  e.g.  ubuntu:ravi ubuntu:anu   -> Ravi and Anu work as ubuntu with their own accounts"
-  ask EXTRA_ACCOUNTS "Extra accounts"                                            ""
+  echo "Each extra person gets their own Claude settings folder (~/.claude-<name>)"
+  echo "on the same Linux user, and signs in with their own Claude account."
+  for U in $USERS; do
+    x=""; ask x "Extra people on $U (names, space separated, e.g. ravi anu; Enter = none)" ""
+    for n in $x; do EXTRA_ACCOUNTS="$EXTRA_ACCOUNTS $U:$n"; done
+  done
 fi
 
 echo "== Installing packages (tmux, curl)"
