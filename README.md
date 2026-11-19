@@ -43,6 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/mai
 The script checks which system it is on:
 
 - **Linux:** asks for sudo itself and sets up every user you choose (systemd).
+  You can also run it as `... | sudo bash`, which is quicker.
 - **macOS:** run it as the Mac user, **without** sudo (launchd). Turn on
   automatic login (System Settings → Users & Groups) so it starts after a
   restart; that isn't possible while FileVault is on.
@@ -86,7 +87,7 @@ The installer asks how people use Claude on the server:
 | **2** – several accounts on the same user | Extra people sign in with their own Claude account but work as the same Linux user (e.g. `ubuntu`), same home and files | When everyone must work in the same folders |
 
 Either way, each person's sessions show **only in their own Claude app**,
-and the server shows under their *Devices* (e.g. `edify03-ubuntu-ravi`).
+and the server shows under their *Devices* (e.g. `server1-ubuntu-ravi`).
 
 With choice 2, as that Linux user:
 

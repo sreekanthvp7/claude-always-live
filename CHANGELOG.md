@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.1 — 2026-11-19
+- Linux, run without `sudo`: the second download now times out and retries
+  instead of hanging silently, and says to use `| sudo bash` if GitHub is slow.
+
 ## v1.2.0 — 2026-11-19
 - **Several people on one server.** The installer asks how people use Claude:
   1. one Claude account per Linux user, or

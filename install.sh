@@ -55,7 +55,7 @@
 #     FileVault on); anyone with physical access then gets your desktop.
 # =============================================================================
 set -euo pipefail
-VERSION="1.2.0"
+VERSION="1.2.1"
 SELF_URL="https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/main/install.sh"
 OS=$(uname)
 
@@ -349,9 +349,15 @@ chmod 644 "$DIR/claude-account.inc"
 # =============================================================================
 install_linux() {
 if [ "$(id -u)" -ne 0 ]; then
-  echo "== Needs root; asking for sudo"
+  echo "== Needs root: re-running with sudo (type your password if asked)"
   if [ -f "${BASH_SOURCE[0]:-}" ]; then exec sudo -E bash "${BASH_SOURCE[0]}" "$@"; fi
-  TMP=$(mktemp); curl -fsSL "$SELF_URL" -o "$TMP"
+  # Piped from curl: fetch a copy to run with sudo (time-limited, retried)
+  TMP=$(mktemp)
+  if ! curl -fsSL --connect-timeout 15 --max-time 60 --retry 3 "$SELF_URL" -o "$TMP"; then
+    echo "!! Could not download the script again (GitHub slow?). Run it with sudo instead:"
+    echo "   curl -fsSL $SELF_URL | sudo bash"
+    exit 1
+  fi
   exec sudo -E bash "$TMP" "$@"
 fi
 
