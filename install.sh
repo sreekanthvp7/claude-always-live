@@ -133,6 +133,8 @@ cat > "$DIR/claude-live" <<'EOF'
 #   claude-live add <id> [name]   keep a session live (also un-removes it)
 #   claude-live remove <slug|id|name>   stop it and never reopen it
 #   claude-live attach <slug>     open its terminal (Ctrl+B then D to leave)
+#   claude-live refresh           pick up new sessions and start any that stopped
+#                                 (runs every 5 minutes by itself)
 #   claude-live boot | stop-all   used by systemd / launchd
 set -u
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -203,6 +205,12 @@ start_one() {
 
 case "${1:-list}" in
   sync)  sync ;;
+  refresh) # every 5 min: add sessions started since (terminal, desktop app)
+         # and restart any live session that stopped. Quiet unless it acts.
+         claude auth status 2>/dev/null | grep -q '"loggedIn": true' || exit 0
+         tmux -L claude-device capture-pane -p -t device 2>/dev/null | grep -q 'Ready' || exit 0
+         sync | grep -v '^$' || true
+         for e in $(envs); do start_one "$e" | grep -v 'already running' || true; done ;;
   start) if [ -n "${2:-}" ]; then start_one "$CONF/$2.env"; else for e in $(envs); do start_one "$e"; sleep 3; done; fi ;;
   boot)  # wait for the network, then let the device claim its folder first
          # (a session in a parent folder would otherwise block the device)
@@ -321,6 +329,29 @@ TimeoutStartSec=infinity
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/claude-sync@.service <<'UNIT'
+[Unit]
+Description=Claude Code: pick up new sessions and restart stopped ones for %i
+
+[Service]
+Type=oneshot
+User=%i
+WorkingDirectory=~
+ExecStart=/usr/local/bin/claude-live refresh
+UNIT
+
+cat > /etc/systemd/system/claude-sync@.timer <<'UNIT'
+[Unit]
+Description=Every 5 minutes: keep %i's Claude sessions live
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 # Older single-session units from earlier setups: stop them starting at boot
 # (left running now so no open session is cut off).
 for u in claude-remote.service $(systemctl list-unit-files --no-legend 'claude-session@*' 'claude-ubuntu@*' 2>/dev/null | awk '{print $1}') \
@@ -343,6 +374,17 @@ for U in $USERS; do
   printf 'PERMISSION_MODE=%s\nMAX_SESSIONS=%s\nMAX_AGE_DAYS=%s\n' "$PERMISSION_MODE" "$MAX_SESSIONS" "$MAX_AGE_DAYS" \
     | sudo -u "$U" tee "$H/.config/claude-sessions/live.conf" >/dev/null
   systemctl enable "claude-device@$U" "claude-live@$U" >/dev/null 2>&1
+  systemctl enable --now "claude-sync@$U.timer" >/dev/null 2>&1
+  # Not signed in? Offer to sign in right now (needs a keyboard).
+  if ! sudo -iu "$U" "$H/.local/bin/claude" auth status 2>/dev/null | grep -q '"loggedIn": true' \
+     && [ -r /dev/tty ] && : 2>/dev/null </dev/tty; then
+    echo "  $U is not signed in to Claude. Sign in now with the SAME account as your"
+    echo "  Claude phone app: open the link shown, sign in, paste the code back here."
+    read -r -p "  Press Enter to sign in now, or type skip: " ans </dev/tty || ans=skip
+    if [ "$ans" != "skip" ]; then
+      sudo -iu "$U" "$H/.local/bin/claude" auth login </dev/tty >/dev/tty 2>&1 || true
+    fi
+  fi
   if sudo -iu "$U" "$H/.local/bin/claude" auth status 2>/dev/null | grep -q '"loggedIn": true'; then
     sudo -iu "$U" /usr/local/bin/claude-live sync
     if [ "$START_NOW" = "1" ]; then
@@ -357,7 +399,8 @@ for U in $USERS; do
 done
 
 echo
-echo "== Done. Services: claude-device@<user> and claude-live@<user> (start at boot)."
+echo "== Done. Services: claude-device@<user>, claude-live@<user> (start at boot)"
+echo "   and claude-sync@<user>.timer (every 5 min: new sessions, restart stopped ones)."
 if [ -n "$NEED_LOGIN" ]; then
   echo
   echo "Sign in once for:$NEED_LOGIN"
@@ -382,7 +425,7 @@ install_mac() {
 [ "$(id -u)" -ne 0 ] || { echo "On macOS run this as your Mac user, without sudo."; exit 1; }
 local BIN="$HOME/.local/bin" AGENTS="$HOME/Library/LaunchAgents" CONF="$HOME/.config/claude-sessions"
 local UID_N; UID_N=$(id -u)
-local LABELS="com.claude.device com.claude.live"
+local LABELS="com.claude.device com.claude.live com.claude.sync"
 export PATH="$BIN:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 if [ "${1:-}" = "--uninstall" ]; then
@@ -434,7 +477,11 @@ plist() { # label program args...
     echo '  <key>ProgramArguments</key><array>'
     for a in "$@"; do echo "    <string>$a</string>"; done
     echo '  </array>'
-    echo '  <key>RunAtLoad</key><true/>'
+    if [ -n "${INTERVAL:-}" ]; then
+      echo "  <key>StartInterval</key><integer>$INTERVAL</integer>"
+    else
+      echo '  <key>RunAtLoad</key><true/>'
+    fi
     echo '  <key>AbandonProcessGroup</key><true/>'
     echo "  <key>WorkingDirectory</key><string>$HOME</string>"
     echo '  <key>EnvironmentVariables</key><dict>'
@@ -447,6 +494,7 @@ plist() { # label program args...
 }
 plist com.claude.device "$TMUX_BIN" -L claude-device new-session -d -s device "$BIN/claude-device.sh"
 plist com.claude.live   "$BIN/claude-live" boot
+INTERVAL=300 plist com.claude.sync "$BIN/claude-live" refresh
 
 if [ "$NO_SLEEP" = "1" ]; then
   echo "== Keeping the Mac awake (your password may be asked)"
@@ -454,6 +502,11 @@ if [ "$NO_SLEEP" = "1" ]; then
   sudo pmset -a womp 1 2>/dev/null || true
 fi
 
+if ! claude auth status 2>/dev/null | grep -q '"loggedIn": true' && [ -r /dev/tty ]; then
+  echo "== Not signed in to Claude. Sign in now with the SAME account as your phone app."
+  read -r -p "   Press Enter to sign in now, or type skip: " ans </dev/tty || ans=skip
+  [ "$ans" = "skip" ] || claude auth login </dev/tty || true
+fi
 if claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
   claude-live sync
   if [ "$START_NOW" = "1" ]; then
@@ -461,14 +514,15 @@ if claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
     tmux -L claude-device kill-server 2>/dev/null || true
     launchctl bootstrap "gui/$UID_N" "$AGENTS/com.claude.device.plist"
     launchctl bootstrap "gui/$UID_N" "$AGENTS/com.claude.live.plist"
+    launchctl bootstrap "gui/$UID_N" "$AGENTS/com.claude.sync.plist"
     echo "== Started. Give it a minute, then: claude-live list"
   else
     echo "== Will start at next login."
   fi
 else
   echo
-  echo "!! Not signed in to Claude yet. Run:  claude   (sign in, then /exit)"
-  echo "   then re-run this script, or log out and back in."
+  echo "!! Not signed in to Claude yet. Run:  claude auth login"
+  echo "   then re-run this script."
 fi
 
 echo

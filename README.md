@@ -9,16 +9,20 @@ sessions on it from your phone.
 
 For each user you choose, it:
 
-1. Installs **tmux** and **Claude Code** if they are missing.
+1. Installs **tmux** and **Claude Code** if they are missing, and if a user
+   isn't signed in, asks you to sign in right there (use the same Claude
+   account as your phone app).
 2. Starts a **Remote Control device** for that user, so the machine appears
    under *Devices* in the Claude app.
 3. Finds that user's sessions used in the last 30 days (up to 8 by default)
    and keeps each one **live with Remote Control on**, in its own tmux session.
-4. Sets this up as background services (systemd on Linux, launchd on macOS),
+4. **Every 5 minutes** picks up new sessions (started in a terminal or the
+   desktop app) and restarts any live session that stopped.
+5. Sets this up as background services (systemd on Linux, launchd on macOS),
    so after every reboot the device and all sessions reconnect on their own.
-5. Answers Claude's start-up questions ("trust this folder?",
+6. Answers Claude's start-up questions ("trust this folder?",
    "enable Remote Control?") automatically, so nothing waits at a prompt.
-6. Turns off older Claude autostart services at boot, if it finds them.
+7. Turns off older Claude autostart services at boot, if it finds them.
 
 Sessions stay live until you remove them with `claude-live remove`.
 Running the script again is safe: it updates everything, keeps your session
@@ -78,6 +82,7 @@ claude-live list
 | `claude-live remove <name>` | Stop a session for good |
 | `claude-live attach <name>` | Open a session's terminal (`Ctrl-b d` to leave) |
 | `claude-live start` | Start any sessions that aren't running |
+| `claude-live refresh` | What the 5-minute check runs: new sessions + restart stopped ones |
 
 ## ⚠️ Take care
 
