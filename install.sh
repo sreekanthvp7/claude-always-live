@@ -71,14 +71,36 @@ ask() { # ask VAR "question" "default"   (reads the keyboard even when piped)
 # =============================================================================
 write_helpers() {
 local DIR=$1
-cat > "$DIR/claude-session.sh" <<'EOF'
+
+# Shared by all helpers: which Claude account we are working for.
+#   (none)            the user's own login in ~/.claude
+#   CLAUDE_ACCOUNT=x  an extra login for the same user in ~/.claude-x
+# Each account has its own device, its own sessions and its own tmux servers.
+cat > "$DIR/claude-account.inc.new" <<'EOF'
+BASE="$HOME/.config/claude-sessions"
+ACCT=${CLAUDE_ACCOUNT:-}
+if [ -n "$ACCT" ]; then
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-$ACCT"
+  CDIR=$CLAUDE_CONFIG_DIR; CONF="$BASE/$ACCT"; SFX="-$ACCT"
+else
+  unset CLAUDE_CONFIG_DIR
+  CDIR="$HOME/.claude"; CONF="$BASE"; SFX=""
+fi
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+MAX_SESSIONS=8; MAX_AGE_DAYS=30; PERMISSION_MODE=auto
+[ -f "$BASE/live.conf" ] && source "$BASE/live.conf"
+[ -n "$ACCT" ] && [ -f "$CONF/live.conf" ] && source "$CONF/live.conf"
+DEV="tmux -L claude-device$SFX"      # the device's tmux server
+T="tmux -L claude-live$SFX"          # the sessions' tmux server
+signed_in() { claude auth status 2>/dev/null | grep -q '"loggedIn": true'; }
+EOF
+
+cat > "$DIR/claude-session.sh.new" <<'EOF'
 #!/bin/bash
 # Runs one saved Claude session (by ID) with Remote Control, inside tmux.
-# Started by `claude-live`. Config: ~/.config/claude-sessions/<slug>.env
+# Started by `claude-live`. Config: ~/.config/claude-sessions/[account/]<slug>.env
 slug="$1"
-CONF="$HOME/.config/claude-sessions"
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-[ -f "$CONF/live.conf" ] && source "$CONF/live.conf"
+source "$(dirname "$0")/claude-account.inc"
 source "$CONF/$slug.env"
 cd "${WORKDIR:-$HOME}" 2>/dev/null || cd "$HOME"
 # Answer the "trust this folder" question only if it is on screen.
@@ -91,14 +113,19 @@ claude --resume "$SESSION_ID" --remote-control "$RC_NAME" \
 exec bash   # keep the window open if Claude exits
 EOF
 
-cat > "$DIR/claude-device.sh" <<'EOF'
+cat > "$DIR/claude-device.sh.new" <<'EOF'
 #!/bin/bash
 # Remote Control device: this machine appears under "Devices" in the Claude
-# app, so new sessions can be started on it remotely.
-CONF="$HOME/.config/claude-sessions"
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-[ -f "$CONF/live.conf" ] && source "$CONF/live.conf"
+# app of the signed-in account, so new sessions can be started on it remotely.
+source "$(dirname "$0")/claude-account.inc"
 cd "$HOME"
+# Not signed in yet? Wait (checking every 30s) until it is, so no restart is
+# needed after `claude auth login`.
+until signed_in; do
+  if [ -n "$ACCT" ]; then echo "Waiting for sign-in: claude-live account login $ACCT"
+  else echo "Waiting for sign-in: run  claude auth login  as $(id -un)"; fi
+  sleep 30
+done
 # Answer the start-up questions only when they are the last line on screen:
 #   "Trust /home/<user>? [y/N]"  and  "Enable Remote Control? (y/n)"
 ( for i in $(seq 1 45); do sleep 2
@@ -110,24 +137,30 @@ cd "$HOME"
   done ) &
 # Retry if it stops early (a registration left over from before a reboot can
 # block it for a few minutes: "This folder is already served ...").
-# Not signed in yet? Wait (checking every 30s) until the user signs in, so no
-# restart is needed after `claude auth login`.
-until claude auth status 2>/dev/null | grep -q '"loggedIn": true'; do
-  echo "Waiting for sign-in: run  claude auth login  as $(id -un)"; sleep 30
-done
 for try in $(seq 1 20); do
   claude remote-control --permission-mode "${PERMISSION_MODE:-auto}" \
          --no-create-session-in-dir \
-         --remote-control-session-name-prefix "$(hostname -s)-$(id -un)"
+         --remote-control-session-name-prefix "$(hostname -s)-$(id -un)$SFX"
   echo "remote-control stopped (try $try); retrying in 30s ..."; sleep 30
 done
 exec bash
 EOF
 
-cat > "$DIR/claude-live" <<'EOF'
+cat > "$DIR/claude-as.new" <<'EOF'
+#!/bin/bash
+# claude-as <account> [claude options]  — use Claude in a terminal as one of
+# this user's extra accounts (its own login, sessions and history).
+[ -n "${1:-}" ] || { echo "usage: claude-as <account> [claude options]"; exit 1; }
+CLAUDE_ACCOUNT=$1; shift
+source "$(dirname "$0")/claude-account.inc"
+[ -d "$CDIR" ] || { echo "No account '$ACCT'. Add it: claude-live account add $ACCT"; exit 1; }
+exec claude "$@"
+EOF
+
+cat > "$DIR/claude-live.new" <<'EOF'
 #!/bin/bash
 # claude-live — keep this user's Claude Code sessions live with Remote Control.
-#   claude-live list              show sessions and whether they are running
+#   claude-live list              show sessions (all accounts) and their state
 #   claude-live sync              add sessions used in the last MAX_AGE_DAYS
 #   claude-live start [slug]      start all (or one) that are not running
 #   claude-live add <id> [name]   keep a session live (also un-removes it)
@@ -135,26 +168,39 @@ cat > "$DIR/claude-live" <<'EOF'
 #   claude-live attach <slug>     open its terminal (Ctrl+B then D to leave)
 #   claude-live refresh           pick up new sessions and start any that stopped
 #                                 (runs every 5 minutes by itself)
-#   claude-live boot | stop-all   used by systemd / launchd
+#
+#  More than one Claude account for this same user (same home, same files):
+#   claude-live account add <name>      add one and sign it in
+#   claude-live account login <name>    sign it in again
+#   claude-live account remove <name>   stop it (its login folder is kept)
+#   claude-live account list
+#   claude-live --account <name> <command>   run any command above for it
+#   claude-as <name>              use Claude in a terminal as that account
+#
+#   claude-live boot | stop-all | devices-start | devices-stop   (services)
 set -u
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 HERE=$(cd "$(dirname "$0")" && pwd)
-CONF="$HOME/.config/claude-sessions"; mkdir -p "$CONF"
+if [ "${1:-}" = "--account" ]; then export CLAUDE_ACCOUNT=$2; shift 2; fi
+source "$HERE/claude-account.inc"
+mkdir -p "$CONF"
 REMOVED="$CONF/removed"; touch "$REMOVED"
-MAX_SESSIONS=8; MAX_AGE_DAYS=30; PERMISSION_MODE=auto
-[ -f "$CONF/live.conf" ] && source "$CONF/live.conf"
-T="tmux -L claude-live"
+ACCOUNTS="$BASE/accounts"; touch "$ACCOUNTS"
 HOST=$(hostname -s)
 
+accounts()  { grep -E '^[a-z0-9_-]+$' "$ACCOUNTS" 2>/dev/null || true; }
+# run "$@" once for the user's own login and once per extra account
+each()      { local a; CLAUDE_ACCOUNT= "$0" "$@"
+              for a in $(accounts); do "$0" --account "$a" "$@"; done; }
 envs()      { ls "$CONF"/*.env 2>/dev/null; }
 known()     { grep -qx "SESSION_ID=$1" "$CONF"/*.env 2>/dev/null; }
 removed()   { grep -qx "$1" "$REMOVED"; }
 short()     { printf '%s' "$1" | cut -c1-$2; }
+label()     { [ -n "$ACCT" ] && echo "account $ACCT" || echo "$(id -un)'s own login"; }
 # Running = any live Claude process has it open (terminal, desktop app, phone).
-# Claude records these in ~/.claude/sessions/<pid>.json
+# Claude records these in <config dir>/sessions/<pid>.json
 running()   { local f p
   pgrep -u "$(id -u)" -f -- "--resume $1" >/dev/null && return 0
-  for f in "$HOME"/.claude/sessions/*.json; do
+  for f in "$CDIR"/sessions/*.json; do
     [ -f "$f" ] && grep -q "\"sessionId\":\"$1\"" "$f" || continue
     p=$(basename "$f" .json); kill -0 "$p" 2>/dev/null && return 0
   done; return 1; }
@@ -162,12 +208,15 @@ field()     { grep -aoE "\"$2\":\"[^\"]*\"" "$1" | tail -1 | cut -d'"' -f4; }
 clean()     { printf '%s' "$1" | tr -d '"$`\\' | cut -c1-60; }
 # newest session logs first (GNU find on Linux, BSD stat on macOS)
 recent()    { if find --version >/dev/null 2>&1; then
-    find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 -name '*.jsonl' \
+    find "$CDIR/projects" -mindepth 2 -maxdepth 2 -name '*.jsonl' \
          -mtime "-$MAX_AGE_DAYS" -printf '%T@ %p\n' 2>/dev/null
   else
-    find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 -name '*.jsonl' \
+    find "$CDIR/projects" -mindepth 2 -maxdepth 2 -name '*.jsonl' \
          -mtime "-$MAX_AGE_DAYS" -exec stat -f '%m %N' {} + 2>/dev/null
   fi | sort -rn | cut -d' ' -f2-; }
+device_ready() { $DEV capture-pane -p -t device 2>/dev/null | grep -q 'Ready'; }
+device_start() { $DEV has-session -t device 2>/dev/null && return 0
+  $DEV new-session -d -s device env CLAUDE_ACCOUNT="$ACCT" "$HERE/claude-device.sh"; }
 
 write_env() { # id name workdir
   local id=$1 name workdir=$3 slug; slug=$(short "$1" 8)
@@ -200,31 +249,44 @@ start_one() {
   ( source "$e"
     if running "$SESSION_ID"; then echo "  = $slug already running"; exit; fi
     $T kill-session -t "$slug" 2>/dev/null
-    $T new-session -d -s "$slug" "$HERE/claude-session.sh" "$slug" && echo "  > $slug started ($RC_NAME)" )
+    $T new-session -d -s "$slug" env CLAUDE_ACCOUNT="$ACCT" "$HERE/claude-session.sh" "$slug" \
+      && echo "  > $slug started ($RC_NAME)" )
+}
+
+boot_one() { # wait for sign-in and the network, let the device claim its
+             # folder first (a session in a parent folder would block it)
+  until signed_in; do sleep 30; done
+  for i in $(seq 1 60); do curl -s -o /dev/null --max-time 5 https://api.anthropic.com && break; sleep 2; done
+  for i in $(seq 1 60); do device_ready && break; sleep 2; done
+  sync; for e in $(envs); do start_one "$e"; sleep 3; done
 }
 
 case "${1:-list}" in
   sync)  sync ;;
+  start) if [ -n "${2:-}" ]; then start_one "$CONF/$2.env"; else for e in $(envs); do start_one "$e"; sleep 3; done; fi ;;
   refresh) # every 5 min: add sessions started since (terminal, desktop app)
          # and restart any live session that stopped. Quiet unless it acts.
-         claude auth status 2>/dev/null | grep -q '"loggedIn": true' || exit 0
-         tmux -L claude-device capture-pane -p -t device 2>/dev/null | grep -q 'Ready' || exit 0
+         if [ -z "$ACCT" ] && [ -z "${CLAUDE_ACCOUNT+x}" ]; then
+           for a in $(accounts); do "$0" --account "$a" refresh; done
+         fi
+         signed_in || exit 0
+         device_start; device_ready || exit 0
          sync | grep -v '^$' || true
          for e in $(envs); do start_one "$e" | grep -v 'already running' || true; done ;;
-  start) if [ -n "${2:-}" ]; then start_one "$CONF/$2.env"; else for e in $(envs); do start_one "$e"; sleep 3; done; fi ;;
-  boot)  # wait for the network, then let the device claim its folder first
-         # (a session in a parent folder would otherwise block the device)
-         for i in $(seq 1 60); do curl -s -o /dev/null --max-time 5 https://api.anthropic.com && break; sleep 2; done
-         until claude auth status 2>/dev/null | grep -q '"loggedIn": true'; do sleep 30; done
-         for i in $(seq 1 60); do
-           tmux -L claude-device capture-pane -p -t device 2>/dev/null | grep -q 'Ready' && break
-           sleep 2; done
-         sync; for e in $(envs); do start_one "$e"; sleep 3; done ;;
-  stop-all) for e in $(envs); do $T kill-session -t "$(basename "$e" .env)" 2>/dev/null; done; true ;;
+  boot)  if [ -z "$ACCT" ]; then        # service: every account, in parallel
+           for a in $(accounts); do "$0" --account "$a" boot & done
+         fi
+         boot_one; wait ;;
+  devices-start) each device-start ;;
+  device-start)  device_start ;;
+  devices-stop)  each device-stop ;;
+  device-stop)   $DEV kill-server 2>/dev/null; true ;;
+  stop-all) if [ -z "$ACCT" ]; then for a in $(accounts); do "$0" --account "$a" stop-all; done; fi
+         $T kill-server 2>/dev/null; true ;;
   attach) exec $T attach -t "$2" ;;
   add)   [ -n "${2:-}" ] || { echo "usage: claude-live add <session-id> [name]"; exit 1; }
          grep -vx "$2" "$REMOVED" > "$REMOVED.tmp" || true; mv "$REMOVED.tmp" "$REMOVED"
-         f=$(ls "$HOME"/.claude/projects/*/"$2".jsonl 2>/dev/null | head -1)
+         f=$(ls "$CDIR"/projects/*/"$2".jsonl 2>/dev/null | head -1)
          wd=$HOME; [ -n "$f" ] && { w=$(field "$f" cwd); [ -d "$w" ] && wd=$w; }
          known "$2" || write_env "$2" "${3:-$HOST $(short "$2" 8)}" "$wd"
          start_one "$CONF/$(short "$2" 8).env" ;;
@@ -236,13 +298,49 @@ case "${1:-list}" in
                pkill -u "$(id -u)" -f -- "--resume $SESSION_ID" 2>/dev/null
                rm -f "$e"; echo "  - removed $s ($RC_NAME)"; fi )
          done ;;
-  list|*) printf '%-10s %-8s %-36s %s\n' SLUG STATE SESSION_ID NAME
-         for e in $(envs); do ( source "$e"; st=stopped; running "$SESSION_ID" && st=live
-           printf '%-10s %-8s %-36s %s\n' "$(basename "$e" .env)" "$st" "$SESSION_ID" "$RC_NAME" ); done
-         echo; echo "attach: claude-live attach <slug>   (leave with Ctrl+B then D)" ;;
+  account)
+    n=${3:-}
+    case "${2:-list}" in
+      add|login)
+        [[ $n =~ ^[a-z0-9_-]+$ ]] || { echo "usage: claude-live account add <name>   (a-z 0-9 _ -)"; exit 1; }
+        grep -qx "$n" "$ACCOUNTS" || echo "$n" >> "$ACCOUNTS"
+        mkdir -p "$HOME/.claude-$n" "$BASE/$n"
+        echo "Sign in for account '$n' with THAT person's Claude account (the one in"
+        echo "their phone app): open the link shown, sign in, paste the code back here."
+        CLAUDE_CONFIG_DIR="$HOME/.claude-$n" claude auth login || true
+        "$0" --account "$n" device-start
+        nohup "$0" --account "$n" boot >/dev/null 2>&1 &
+        echo "Account '$n' added. Its device shows in that account's app as $HOST-$(id -un)-$n"
+        echo "Use it in a terminal with:  claude-as $n" ;;
+      remove)
+        [ -n "$n" ] || { echo "usage: claude-live account remove <name>"; exit 1; }
+        "$0" --account "$n" stop-all; "$0" --account "$n" device-stop
+        grep -vx "$n" "$ACCOUNTS" > "$ACCOUNTS.tmp" || true; mv "$ACCOUNTS.tmp" "$ACCOUNTS"
+        echo "Account '$n' stopped and removed. Its login is kept in ~/.claude-$n"
+        echo "(delete that folder to sign it out for good)." ;;
+      list|*)
+        echo "$(id -un)'s own login (~/.claude)"
+        for a in $(accounts); do echo "$a (~/.claude-$a)"; done ;;
+    esac ;;
+  list|*)
+    show() { echo "== $(label)"
+      printf '%-10s %-8s %-36s %s\n' SLUG STATE SESSION_ID NAME
+      for e in $(envs); do ( source "$e"; st=stopped; running "$SESSION_ID" && st=live
+        printf '%-10s %-8s %-36s %s\n' "$(basename "$e" .env)" "$st" "$SESSION_ID" "$RC_NAME" ); done; }
+    show
+    if [ -z "$ACCT" ] && [ -z "${CLAUDE_ACCOUNT+x}" ]; then
+      for a in $(accounts); do echo; "$0" --account "$a" list | sed '/^attach:/d;/^$/d'; done
+    fi
+    echo; echo "attach: claude-live [--account <name>] attach <slug>   (leave with Ctrl+B then D)" ;;
 esac
 EOF
-chmod 755 "$DIR/claude-session.sh" "$DIR/claude-device.sh" "$DIR/claude-live"
+# swap in the new files (a new file, not an overwrite, so running copies of
+# these scripts keep working)
+local x
+for x in claude-session.sh claude-device.sh claude-live claude-as claude-account.inc; do
+  chmod 755 "$DIR/$x.new"; mv -f "$DIR/$x.new" "$DIR/$x"
+done
+chmod 644 "$DIR/claude-account.inc"
 }
 
 # =============================================================================
@@ -268,6 +366,18 @@ SUGGEST=$(( (MEM_MB - 1024) / 500 )); [ "$SUGGEST" -lt 1 ] && SUGGEST=1; [ "$SUG
 ask MAX_SESSIONS    "Max live sessions per user (RAM ${MEM_MB} MB; each uses ~300-450 MB)" "$SUGGEST"
 ask MAX_AGE_DAYS    "Keep sessions used within the last N days"                 "30"
 ask START_NOW       "Start everything now? (1=yes, 0=only at next boot)"         "1"
+echo
+echo "How do people use Claude on this server?"
+echo "  1 = one Claude account per Linux user (each person has their own Linux user)"
+echo "  2 = also other people's Claude accounts on the SAME Linux user (same home"
+echo "      and files; each person signs in with their own account)"
+ask SHARE_MODE      "Choose 1 or 2"                                              "1"
+EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-}
+if [ "$SHARE_MODE" = "2" ] && [ -z "$EXTRA_ACCOUNTS" ]; then
+  echo "Name each extra person as user:name (space separated)."
+  echo "  e.g.  ubuntu:ravi ubuntu:anu   -> Ravi and Anu work as ubuntu with their own accounts"
+  ask EXTRA_ACCOUNTS "Extra accounts"                                            ""
+fi
 
 echo "== Installing packages (tmux, curl)"
 MISSING=""
@@ -298,11 +408,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=oneshot
 User=%i
 WorkingDirectory=~
-ExecStart=$TMUX_BIN -L claude-device new-session -d -s device /usr/local/bin/claude-device.sh
-ExecStop=$TMUX_BIN -L claude-device kill-server
+# one device per Claude account of this user (each in its own tmux server)
+ExecStart=/usr/local/bin/claude-live devices-start
+ExecStop=/usr/local/bin/claude-live devices-stop
 RemainAfterExit=yes
 TimeoutStartSec=60
 
@@ -338,6 +449,8 @@ Type=oneshot
 User=%i
 WorkingDirectory=~
 ExecStart=/usr/local/bin/claude-live refresh
+# keep sessions/devices it (re)starts running after this check finishes
+KillMode=process
 UNIT
 
 cat > /etc/systemd/system/claude-sync@.timer <<'UNIT'
@@ -385,11 +498,22 @@ for U in $USERS; do
       sudo -iu "$U" "$H/.local/bin/claude" auth login </dev/tty >/dev/tty 2>&1 || true
     fi
   fi
+  # Extra Claude accounts for this same user (same home and files, own login)
+  for pair in $EXTRA_ACCOUNTS; do
+    [ "${pair%%:*}" = "$U" ] || continue
+    n=${pair#*:}
+    echo "  extra account '$n' for $U"
+    if [ -r /dev/tty ] && : 2>/dev/null </dev/tty; then
+      sudo -iu "$U" /usr/local/bin/claude-live account add "$n" </dev/tty >/dev/tty 2>&1 || true
+    else
+      echo "  (no keyboard: later run as $U:  claude-live account add $n)"
+    fi
+  done
   if sudo -iu "$U" "$H/.local/bin/claude" auth status 2>/dev/null | grep -q '"loggedIn": true'; then
     sudo -iu "$U" /usr/local/bin/claude-live sync
     if [ "$START_NOW" = "1" ]; then
       systemctl restart "claude-device@$U"
-      systemctl restart "claude-live@$U"
+      systemctl restart --no-block "claude-live@$U"
     fi
     echo "  ready (device + live sessions)"
   else
@@ -492,7 +616,7 @@ plist() { # label program args...
     echo '</dict></plist>'
   } > "$AGENTS/$label.plist"
 }
-plist com.claude.device "$TMUX_BIN" -L claude-device new-session -d -s device "$BIN/claude-device.sh"
+plist com.claude.device "$BIN/claude-live" devices-start
 plist com.claude.live   "$BIN/claude-live" boot
 INTERVAL=300 plist com.claude.sync "$BIN/claude-live" refresh
 

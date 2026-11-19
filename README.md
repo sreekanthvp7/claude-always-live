@@ -55,6 +55,7 @@ It asks a few questions; pressing Enter keeps the default:
 | Keep sessions used within N days | 30 | |
 | Keep the Mac awake (macOS) | yes | |
 | Start now | yes | |
+| How people use Claude (Linux) | 1 | 1 = own Linux user each, 2 = extra accounts on the same user |
 
 ## After install
 
@@ -71,6 +72,31 @@ sudo systemctl stop claude-remote
 # Check everything is running (as the user)
 claude-live list
 ```
+
+## More than one person on a server
+
+The installer asks how people use Claude on the server:
+
+| Choice | How it works | When to use |
+|---|---|---|
+| **1** – one account per Linux user | Each person gets their own Linux user (`sudo adduser ravi`) and signs in with their own Claude account | Best: separate files and permissions |
+| **2** – several accounts on the same user | Extra people sign in with their own Claude account but work as the same Linux user (e.g. `ubuntu`), same home and files | When everyone must work in the same folders |
+
+Either way, each person's sessions show **only in their own Claude app**,
+and the server shows under their *Devices* (e.g. `edify03-ubuntu-ravi`).
+
+With choice 2, as that Linux user:
+
+```bash
+claude-live account add ravi      # Ravi signs in with HIS Claude account
+claude-live account list
+claude-as ravi                    # Ravi uses Claude in a terminal
+claude-live --account ravi list   # Ravi's live sessions
+claude-live account remove ravi   # stop Ravi's device and sessions
+```
+
+Note: with choice 2 everyone's Claude can change everyone's files on that
+user, and two people editing the same file at once can overwrite each other.
 
 ## Day-to-day (as each user)
 
@@ -101,6 +127,8 @@ claude-live list
   small VMs.
 - **Login expiry:** if a user's Claude login expires, their sessions stop
   reconnecting until they sign in again (`sudo -iu <user> claude auth login`).
+- **Each extra account (choice 2) can run anything that Linux user can.**
+  Only add people you trust with that user's files.
 - **Only pick real users.** Don't set it up for service accounts (webmin,
   monitoring tools, etc.).
 - **macOS:** automatic login means anyone with physical access gets your
