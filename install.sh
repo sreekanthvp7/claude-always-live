@@ -55,15 +55,30 @@
 #     FileVault on); anyone with physical access then gets your desktop.
 # =============================================================================
 set -euo pipefail
-VERSION="1.2.2"
+VERSION="1.2.3"
 SELF_URL="https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/main/install.sh"
 OS=$(uname)
 
-ask() { # ask VAR "question" "default"   (reads the keyboard even when piped)
-  local var=$1 q=$2 def=$3 ans=""
+# ---- screen layout ---------------------------------------------------------
+LINE="  ------------------------------------------------------------------"
+banner() { echo; echo "$LINE"; printf '   %s\n' "$@"; echo "$LINE"; }
+step()   { printf '\n  ==> %s\n' "$1"; }       # a stage of the install
+info()   { printf '      %s\n' "$@"; }         # detail lines under a stage
+ok()     { printf '      [ok] %s\n' "$1"; }
+warn()   { printf '      [!]  %s\n' "$1"; }
+
+QN=0
+ask() { # ask VAR "title" "default" [hint lines...]  (reads the keyboard even when piped)
+  local var=$1 q=$2 def=$3 ans="" h tty=""; shift 3
   if [ -n "${!var:-}" ]; then return; fi
-  if [ -t 0 ]; then read -r -p "$q [$def]: " ans
-  elif [ -r /dev/tty ] && : 2>/dev/null </dev/tty; then read -r -p "$q [$def]: " ans </dev/tty || true; fi
+  if [ -t 0 ]; then tty=/dev/stdin
+  elif [ -r /dev/tty ] && : 2>/dev/null </dev/tty; then tty=/dev/tty; fi
+  if [ -n "$tty" ]; then
+    QN=$((QN+1))
+    printf '\n  %2d. %s\n' "$QN" "$q"
+    for h in "$@"; do printf '      %s\n' "$h"; done
+    read -r -p "      > [${def:-none}] " ans <"$tty" || true
+  fi
   printf -v "$var" '%s' "${ans:-$def}"
 }
 
@@ -349,7 +364,7 @@ chmod 644 "$DIR/claude-account.inc"
 # =============================================================================
 install_linux() {
 if [ "$(id -u)" -ne 0 ]; then
-  echo "== Needs root: re-running with sudo (type your password if asked)"
+  echo; echo "  ==> Needs root: re-running with sudo (type your password if asked)"
   if [ -f "${BASH_SOURCE[0]:-}" ]; then exec sudo -E bash "${BASH_SOURCE[0]}" "$@"; fi
   # Piped from curl: fetch a copy to run with sudo (time-limited, retried)
   TMP=$(mktemp)
@@ -365,31 +380,35 @@ ALL_USERS=$(awk -F: '$3>=1000 && $3<60000 && $7!~/(nologin|false)$/ {printf "%s:
 DEFAULT_USERS=""   # suggest only users who already use Claude; else everyone
 for e in $ALL_USERS; do [ -d "${e#*:}/.claude" ] && DEFAULT_USERS="$DEFAULT_USERS${e%%:*} "; done
 [ -n "$DEFAULT_USERS" ] || for e in $ALL_USERS; do DEFAULT_USERS="$DEFAULT_USERS${e%%:*} "; done
-echo "== Claude Code always-live v$VERSION setup on $(hostname) (Linux) =="
-ask USERS           "Users to set up (space separated)"                         "${DEFAULT_USERS% }"
-ask PERMISSION_MODE "Permission mode (auto, acceptEdits, default, bypassPermissions)" "auto"
+banner "Claude Code always-live  v$VERSION" "$(hostname)  |  Linux" \
+       "Press Enter to keep the value shown in [brackets]."
+ask USERS "Linux users to set up" "${DEFAULT_USERS% }" \
+    "Space separated. Only real people, not service accounts."
+ask PERMISSION_MODE "Permission mode" "auto" \
+    "auto (recommended) | acceptEdits | default | bypassPermissions"
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 SUGGEST=$(( (MEM_MB - 1024) / 500 )); [ "$SUGGEST" -lt 1 ] && SUGGEST=1; [ "$SUGGEST" -gt 8 ] && SUGGEST=8
-ask MAX_SESSIONS    "Max live sessions per user (RAM ${MEM_MB} MB; each uses ~300-450 MB)" "$SUGGEST"
-ask MAX_AGE_DAYS    "Keep sessions used within the last N days"                 "30"
-ask START_NOW       "Start everything now? (1=yes, 0=only at next boot)"         "1"
-echo
-echo "How do people use Claude on this server?"
-echo "  1 = one Claude account per Linux user (each person has their own Linux user)"
-echo "  2 = also other people's Claude accounts on the SAME Linux user (same home"
-echo "      and files; each person signs in with their own account)"
-ask SHARE_MODE      "Choose 1 or 2"                                              "1"
+ask MAX_SESSIONS "Max live sessions per user" "$SUGGEST" \
+    "This server has ${MEM_MB} MB RAM; each session uses about 300-450 MB."
+ask MAX_AGE_DAYS "Keep sessions used within the last N days" "30"
+ask START_NOW "Start everything now?" "1" \
+    "1 = yes    0 = only at next boot"
+ask SHARE_MODE "How do people use Claude on this server?" "1" \
+    "1 = one Claude account per Linux user" \
+    "2 = also other people's Claude accounts on the SAME Linux user" \
+    "    (same home and files; each signs in with their own account)"
 EXTRA_ACCOUNTS=${EXTRA_ACCOUNTS:-}   # non-interactive form: "user:name user:name"
 if [ "$SHARE_MODE" = "2" ] && [ -z "$EXTRA_ACCOUNTS" ]; then
-  echo "Each extra person gets their own Claude settings folder (~/.claude-<name>)"
-  echo "on the same Linux user, and signs in with their own Claude account."
   for U in $USERS; do
-    x=""; ask x "Extra people on $U (names, space separated, e.g. ravi anu; Enter = none)" ""
+    x=""; ask x "Extra people on the Linux user '$U'" "" \
+      "Names, space separated, e.g.  ravi anu" \
+      "Each gets their own settings folder (~/.claude-<name>) and signs in" \
+      "with their own Claude account. Press Enter for none."
     for n in $x; do EXTRA_ACCOUNTS="$EXTRA_ACCOUNTS $U:$n"; done
   done
 fi
 
-echo "== Installing packages (tmux, curl)"
+step "Installing packages (tmux, curl)"
 MISSING=""
 for c in tmux curl pgrep; do command -v $c >/dev/null || MISSING="$MISSING $c"; done
 MISSING=${MISSING/pgrep/procps}
@@ -486,11 +505,11 @@ systemctl daemon-reload
 
 NEED_LOGIN=""
 for U in $USERS; do
-  id "$U" >/dev/null 2>&1 || { echo "!! user $U does not exist, skipped"; continue; }
+  id "$U" >/dev/null 2>&1 || { step "User $U"; warn "user $U does not exist, skipped"; continue; }
   H=$(getent passwd "$U" | cut -d: -f6)
-  echo "== $U"
+  step "User $U"
   if [ ! -x "$H/.local/bin/claude" ]; then
-    echo "  installing Claude Code for $U"
+    info "Installing Claude Code for $U ..."
     sudo -iu "$U" bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null
   fi
   sudo -u "$U" mkdir -p "$H/.config/claude-sessions"
@@ -501,9 +520,11 @@ for U in $USERS; do
   # Not signed in? Offer to sign in right now (needs a keyboard).
   if ! sudo -iu "$U" "$H/.local/bin/claude" auth status 2>/dev/null | grep -q '"loggedIn": true' \
      && [ -r /dev/tty ] && : 2>/dev/null </dev/tty; then
-    echo "  $U is not signed in to Claude. Sign in now with the SAME account as your"
-    echo "  Claude phone app: open the link shown, sign in, paste the code back here."
-    read -r -p "  Press Enter to sign in now, or type skip: " ans </dev/tty || ans=skip
+    warn "$U is not signed in to Claude."
+    info "Sign in with the SAME account as your Claude phone app:" \
+         "open the link shown, sign in, then paste the code back here."
+    echo
+    read -r -p "      > Press Enter to sign in now, or type skip: " ans </dev/tty || ans=skip
     if [ "$ans" != "skip" ]; then
       sudo -iu "$U" "$H/.local/bin/claude" auth login </dev/tty >/dev/tty 2>&1 || true
     fi
@@ -512,44 +533,46 @@ for U in $USERS; do
   for pair in $EXTRA_ACCOUNTS; do
     [ "${pair%%:*}" = "$U" ] || continue
     n=${pair#*:}
-    echo "  extra account '$n' for $U"
+    echo; info "Extra account '$n' (settings folder ~/.claude-$n)"
     if [ -r /dev/tty ] && : 2>/dev/null </dev/tty; then
       sudo -iu "$U" /usr/local/bin/claude-live account add "$n" </dev/tty >/dev/tty 2>&1 || true
     else
-      echo "  (no keyboard: later run as $U:  claude-live account add $n)"
+      warn "no keyboard: later run as $U:  claude-live account add $n"
     fi
   done
   if sudo -iu "$U" "$H/.local/bin/claude" auth status 2>/dev/null | grep -q '"loggedIn": true'; then
-    sudo -iu "$U" /usr/local/bin/claude-live sync
+    sudo -iu "$U" /usr/local/bin/claude-live sync | sed 's/^  /      /'
     if [ "$START_NOW" = "1" ]; then
       systemctl restart "claude-device@$U"
       systemctl restart --no-block "claude-live@$U"
     fi
-    echo "  ready (device + live sessions)"
+    ok "ready: device + live sessions"
   else
     NEED_LOGIN="$NEED_LOGIN $U"
-    echo "  NOT signed in yet"
+    warn "not signed in yet"
   fi
 done
 
-echo
-echo "== Done. Services: claude-device@<user>, claude-live@<user> (start at boot)"
-echo "   and claude-sync@<user>.timer (every 5 min: new sessions, restart stopped ones)."
+banner "Done" \
+       "Starts at every boot:  claude-device@<user>, claude-live@<user>" \
+       "Every 5 minutes:       claude-sync@<user>.timer (new sessions, restarts)"
 if [ -n "$NEED_LOGIN" ]; then
-  echo
-  echo "Sign in once for:$NEED_LOGIN"
+  step "Still to do: sign in once for:$NEED_LOGIN"
   for U in $NEED_LOGIN; do
-    echo "   sudo -iu $U claude auth login     # open the link, sign in, paste the code"
-    echo "   (the device and sessions then start by themselves within a minute)"
+    info "sudo -iu $U claude auth login     # open the link, sign in, paste the code"
   done
+  info "The device and sessions then start by themselves within a minute."
 fi
 if systemctl is-active --quiet claude-remote 2>/dev/null; then
-  echo
-  echo "The old claude-remote service is still running. Once the new sessions show"
-  echo "in the app, stop it:  sudo systemctl stop claude-remote"
+  step "Old autostart still running"
+  info "Once the new sessions show in the app, stop it:" \
+       "sudo systemctl stop claude-remote"
 fi
+step "Manage sessions (as each user)"
+info "claude-live list                 sessions and their state" \
+     "claude-live remove <name>        stop one for good" \
+     "claude-live account add <name>   another person's account on this user"
 echo
-echo "Manage sessions as each user:  claude-live list | add <id> | remove <slug> | attach <slug>"
 }
 
 # =============================================================================
@@ -576,12 +599,18 @@ fi
 
 MEM_MB=$(( $(sysctl -n hw.memsize) / 1048576 ))
 SUGGEST=$(( (MEM_MB - 4096) / 500 )); [ "$SUGGEST" -lt 1 ] && SUGGEST=1; [ "$SUGGEST" -gt 8 ] && SUGGEST=8
-echo "== Claude Code always-live v$VERSION setup for $(id -un) on $(scutil --get ComputerName 2>/dev/null || hostname -s) (macOS) =="
-ask PERMISSION_MODE "Permission mode (auto, acceptEdits, default, bypassPermissions)" "auto"
-ask MAX_SESSIONS    "Max live sessions (RAM ${MEM_MB} MB; each uses ~300-450 MB)"   "$SUGGEST"
-ask MAX_AGE_DAYS    "Keep sessions used within the last N days"                    "30"
-ask NO_SLEEP        "Stop this Mac sleeping + restart after power loss? (1/0, asks for your password)" "1"
-ask START_NOW       "Start everything now? (1=yes, 0=at next login)"               "1"
+banner "Claude Code always-live  v$VERSION" \
+       "$(scutil --get ComputerName 2>/dev/null || hostname -s)  |  macOS  |  user $(id -un)" \
+       "Press Enter to keep the value shown in [brackets]."
+ask PERMISSION_MODE "Permission mode" "auto" \
+    "auto (recommended) | acceptEdits | default | bypassPermissions"
+ask MAX_SESSIONS "Max live sessions" "$SUGGEST" \
+    "This Mac has ${MEM_MB} MB RAM; each session uses about 300-450 MB."
+ask MAX_AGE_DAYS "Keep sessions used within the last N days" "30"
+ask NO_SLEEP "Keep this Mac awake and restart it after a power cut?" "1" \
+    "1 = yes (asks for your Mac password)    0 = no"
+ask START_NOW "Start everything now?" "1" \
+    "1 = yes    0 = at next login"
 
 if ! command -v tmux >/dev/null; then
   if ! command -v brew >/dev/null; then
@@ -589,11 +618,11 @@ if ! command -v tmux >/dev/null; then
     echo "   Install Homebrew from https://brew.sh , then re-run this script."
     exit 1
   fi
-  echo "== Installing tmux"; brew install tmux
+  step "Installing tmux"; brew install tmux
 fi
 local TMUX_BIN; TMUX_BIN=$(command -v tmux)
 if [ ! -x "$BIN/claude" ]; then
-  echo "== Installing Claude Code"; curl -fsSL https://claude.ai/install.sh | bash
+  step "Installing Claude Code"; curl -fsSL https://claude.ai/install.sh | bash
 fi
 mkdir -p "$BIN" "$AGENTS" "$CONF"
 printf 'PERMISSION_MODE=%s\nMAX_SESSIONS=%s\nMAX_AGE_DAYS=%s\n' "$PERMISSION_MODE" "$MAX_SESSIONS" "$MAX_AGE_DAYS" > "$CONF/live.conf"
@@ -631,14 +660,14 @@ plist com.claude.live   "$BIN/claude-live" boot
 INTERVAL=300 plist com.claude.sync "$BIN/claude-live" refresh
 
 if [ "$NO_SLEEP" = "1" ]; then
-  echo "== Keeping the Mac awake (your password may be asked)"
+  step "Keeping the Mac awake (your password may be asked)"
   sudo pmset -a sleep 0 disksleep 0 autorestart 1 || echo "!! pmset failed; set it in System Settings > Energy"
   sudo pmset -a womp 1 2>/dev/null || true
 fi
 
 if ! claude auth status 2>/dev/null | grep -q '"loggedIn": true' && [ -r /dev/tty ]; then
-  echo "== Not signed in to Claude. Sign in now with the SAME account as your phone app."
-  read -r -p "   Press Enter to sign in now, or type skip: " ans </dev/tty || ans=skip
+  step "Not signed in to Claude"; info "Sign in with the SAME account as your Claude phone app."
+  read -r -p "      > Press Enter to sign in now, or type skip: " ans </dev/tty || ans=skip
   [ "$ans" = "skip" ] || claude auth login </dev/tty || true
 fi
 if claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
@@ -649,9 +678,9 @@ if claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
     launchctl bootstrap "gui/$UID_N" "$AGENTS/com.claude.device.plist"
     launchctl bootstrap "gui/$UID_N" "$AGENTS/com.claude.live.plist"
     launchctl bootstrap "gui/$UID_N" "$AGENTS/com.claude.sync.plist"
-    echo "== Started. Give it a minute, then: claude-live list"
+    banner "Done" "Started. Give it a minute, then run:  claude-live list"
   else
-    echo "== Will start at next login."
+    banner "Done" "Everything starts at your next login."
   fi
 else
   echo

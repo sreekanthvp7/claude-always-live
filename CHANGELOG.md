@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.3 — 2026-11-19
+- Cleaner installer screen: title box, numbered questions with a short
+  explanation under each, spacing between them, and tidy progress lines
+  ([ok] / [!]) and a summary at the end.
+
 ## v1.2.2 — 2026-11-19
 - Choice 2 now asks for just the person's name for each Linux user
   (e.g. `ravi`), instead of `user:name`.
