@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 #  claude-always-live — keep Claude Code sessions live on Linux servers and Macs
-#  https://github.com/sreekanthvp7/claude-always-live
+#  https://github.com/sreekanthvp7/claude-always-live   (version: see VERSION below)
 #
 #  ONE COMMAND, ANY MACHINE (Linux server, AWS / Google Cloud / Azure VM, Mac):
 #     curl -fsSL https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/main/install.sh | bash
@@ -55,6 +55,7 @@
 #     FileVault on); anyone with physical access then gets your desktop.
 # =============================================================================
 set -euo pipefail
+VERSION="1.2.0"
 SELF_URL="https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/main/install.sh"
 OS=$(uname)
 
@@ -358,7 +359,7 @@ ALL_USERS=$(awk -F: '$3>=1000 && $3<60000 && $7!~/(nologin|false)$/ {printf "%s:
 DEFAULT_USERS=""   # suggest only users who already use Claude; else everyone
 for e in $ALL_USERS; do [ -d "${e#*:}/.claude" ] && DEFAULT_USERS="$DEFAULT_USERS${e%%:*} "; done
 [ -n "$DEFAULT_USERS" ] || for e in $ALL_USERS; do DEFAULT_USERS="$DEFAULT_USERS${e%%:*} "; done
-echo "== Claude Code always-live setup on $(hostname) (Linux) =="
+echo "== Claude Code always-live v$VERSION setup on $(hostname) (Linux) =="
 ask USERS           "Users to set up (space separated)"                         "${DEFAULT_USERS% }"
 ask PERMISSION_MODE "Permission mode (auto, acceptEdits, default, bypassPermissions)" "auto"
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
@@ -566,7 +567,7 @@ fi
 
 MEM_MB=$(( $(sysctl -n hw.memsize) / 1048576 ))
 SUGGEST=$(( (MEM_MB - 4096) / 500 )); [ "$SUGGEST" -lt 1 ] && SUGGEST=1; [ "$SUGGEST" -gt 8 ] && SUGGEST=8
-echo "== Claude Code always-live setup for $(id -un) on $(scutil --get ComputerName 2>/dev/null || hostname -s) (macOS) =="
+echo "== Claude Code always-live v$VERSION setup for $(id -un) on $(scutil --get ComputerName 2>/dev/null || hostname -s) (macOS) =="
 ask PERMISSION_MODE "Permission mode (auto, acceptEdits, default, bypassPermissions)" "auto"
 ask MAX_SESSIONS    "Max live sessions (RAM ${MEM_MB} MB; each uses ~300-450 MB)"   "$SUGGEST"
 ask MAX_AGE_DAYS    "Keep sessions used within the last N days"                    "30"

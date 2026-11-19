@@ -30,6 +30,9 @@ list, and never starts a session that is already open.
 
 ## Install — one command for every machine
 
+Latest version: see [CHANGELOG.md](CHANGELOG.md). To install a fixed
+version, put the tag in the link instead of `main`, e.g. `.../v1.2.0/install.sh`.
+
 Linux servers (Ubuntu, Debian, RHEL/Rocky/Alma, Fedora, openSUSE), AWS / Google
 Cloud / Azure VMs, and Macs all use the same command:
 
