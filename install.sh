@@ -55,7 +55,7 @@
 #     FileVault on); anyone with physical access then gets your desktop.
 # =============================================================================
 set -euo pipefail
-VERSION="1.2.3"
+VERSION="1.2.4"
 SELF_URL="https://raw.githubusercontent.com/sreekanthvp7/claude-always-live/main/install.sh"
 OS=$(uname)
 
@@ -251,7 +251,11 @@ sync() {
     id=$(basename "$f" .jsonl)
     [[ $id =~ ^[0-9a-f-]{36}$ ]] || continue
     known "$id" && continue; removed "$id" && continue
-    grep -qE '"entrypoint":"(cli|claude-desktop)"' "$f" || continue   # interactive sessions only
+    # interactive sessions only: terminal, desktop app, or started from the
+    # Claude app through this machine's device (log starts with session-owner)
+    if ! grep -qE '"entrypoint":"(cli|claude-desktop)"' "$f"; then
+      head -c 300 "$f" | grep -q '"type":"session-owner"' || continue
+    fi
     grep -q '"type":"user"' "$f" || continue
     name=$(field "$f" customTitle); [ -z "$name" ] && name=$(field "$f" aiTitle)
     [ -z "$name" ] && name="$HOST $(short "$id" 8)"
@@ -493,6 +497,14 @@ OnUnitActiveSec=5min
 [Install]
 WantedBy=timers.target
 UNIT
+
+# Package updates on Ubuntu/Debian run "needrestart", which restarts services
+# that use updated libraries. Restarting these would cut off live sessions.
+mkdir -p /etc/needrestart/conf.d
+cat > /etc/needrestart/conf.d/claude-always-live.conf <<'NR'
+# claude-always-live: never restart the Claude services after package updates
+$nrconf{override_rc}{qr(^claude-(device|live|sync)@)} = 0;
+NR
 
 # Older single-session units from earlier setups: stop them starting at boot
 # (left running now so no open session is cut off).

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.4 — 2026-11-20
+- **Sessions started from the Claude app** (through the machine's device) are
+  now kept live and come back after restarts, like terminal sessions.
+- **Package updates no longer cut sessions off:** Ubuntu/Debian's
+  `needrestart` is told not to restart the Claude services after updates.
+
 ## v1.2.3 — 2026-11-19
 - Cleaner installer screen: title box, numbered questions with a short
   explanation under each, spacing between them, and tidy progress lines
